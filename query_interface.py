@@ -1,3 +1,4 @@
+import time
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import OllamaLLM
@@ -24,9 +25,13 @@ while True:
         query = input("\nPrompt: ")
         if not query.strip():
             continue
-        result = qa_chain.invoke({"query": query})  # <- updated from __call__ to invoke
 
-        print("\nAssistant:\n", result["result"])
+        start_time = time.time()
+        result = qa_chain.invoke({"query": query})
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+
+        print(f"\nAssistant (responded in {elapsed_time:.2f} seconds):\n", result["result"])
         print("\nTop matching bug records:")
         for i, doc in enumerate(result["source_documents"], 1):
             print(f"\n--- Match {i} ---\n", doc.page_content[:1000], "...\n")
