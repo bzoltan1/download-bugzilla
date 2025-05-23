@@ -4,7 +4,7 @@ from langchain.docstore.document import Document
 import json
 import os
 
-BUG_FILE = "bugs.json"
+BUG_FILE = "bug_reports.json"
 CHROMA_DIR = "bug_index"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
