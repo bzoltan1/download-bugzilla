@@ -11,30 +11,44 @@ vectorstore = Chroma(persist_directory="bug_index", embedding_function=embedding
 # Set up local model via Ollama
 llm = OllamaLLM(model="mistral", temperature=0.1)
 
-# RAG chain: retrieve top 3 relevant bug reports, feed to model
+# RAG chain
 qa_chain = RetrievalQA.from_chain_type(
     llm=llm,
     retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
     return_source_documents=True
 )
 
-# CLI interface
-print("🔍 Ask a question about your Bugzilla data (Ctrl+C to exit):")
+def get_multiline_input(prompt="Enter your prompt (end with '###' on a new line):\n"):
+    print(prompt)
+    lines = []
+    while True:
+        try:
+            line = input()
+            if line.strip() == "###":
+                break
+            lines.append(line)
+        except EOFError:
+            break
+    return "\n".join(lines).strip()
+
+# CLI
+print("🔍 Ask a question about your Bugzilla data. Type '###' on a new line to finish your prompt (Ctrl+C to exit).")
 while True:
     try:
-        query = input("\nPrompt: ")
-        if not query.strip():
+        query = get_multiline_input()
+        if not query:
             continue
+
+        print("⏳ Processing your question, please wait...")
 
         start_time = time.time()
         result = qa_chain.invoke({"query": query})
-        end_time = time.time()
-        elapsed_time = end_time - start_time
+        elapsed_time = time.time() - start_time
 
-        print(f"\nAssistant (responded in {elapsed_time:.2f} seconds):\n", result["result"])
-        print("\nTop matching bug records:")
+        print(f"\n✅ Assistant (responded in {elapsed_time:.2f} seconds):\n{result['result']}")
+        print("\n📄 Top matching bug records:")
         for i, doc in enumerate(result["source_documents"], 1):
-            print(f"\n--- Match {i} ---\n", doc.page_content[:1000], "...\n")
+            print(f"\n--- Match {i} ---\n{doc.page_content[:1000]}...\n")
     except KeyboardInterrupt:
-        print("\nGoodbye!")
+        print("\n👋 Goodbye!")
         break
