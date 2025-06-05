@@ -13,14 +13,12 @@ api_keys = [""]
 current_key_index = 0  # Start with the first key
 output_file = 'bug_reports.json'
 
-# Parameters for the API query
 params = {
-    'limit': 500,  # Limit of results per page
-    'offset': 0    # To handle pagination
+    'limit': 500,
+    'offset': 0
 }
 
 
-# Load previously saved progress if it exists
 def load_existing_data():
     if os.path.exists(output_file):
         try:
@@ -29,33 +27,31 @@ def load_existing_data():
                 print(f"Loaded {len(existing_data)} existing bug reports.")
                 return existing_data
         except json.JSONDecodeError:
-            print(f"Warning: Failed to parse '{output_file}'. Starting fresh.")
+            backup_file = output_file + ".corrupt_backup"
+            os.rename(output_file, backup_file)
+            print(f"Warning: Failed to parse '{output_file}'. Backed up to '{backup_file}'. Starting fresh.")
             return []
     return []
 
-# Save the current progress to a file
+
+
 def save_data(bugs):
     try:
         with open(output_file, 'w') as f:
             json.dump(bugs, f, indent=4)
-        print(f"Saved {len(bugs)} bug reports to '{output_file}'.")
     except (IOError, OSError) as e:
         print(f"Failed to save data: {e}")
 
-
-# Function to fetch comments for a specific bug with retry handling and key rotation
 def fetch_comments(bug_id):
     global current_key_index
     comments_url = f"https://bugzilla.suse.com/rest/bug/{bug_id}/comment"
-    network_error_attempts = 0  # Track attempts for exponential backoff
+    network_error_attempts = 0
     
     while True:
         try:
-            # Attempt to fetch comments with the current API key
             response = requests.get(comments_url, params={'api_key': api_keys[current_key_index]}, timeout=10)
             response.raise_for_status()
-            
-            # Parse JSON response safely
+
             comments_data = response.json().get('bugs', {}).get(str(bug_id), {}).get('comments', [])
             comments_list = []
             for comment in comments_data:
@@ -73,16 +69,23 @@ def fetch_comments(bug_id):
             time.sleep(5)
 
         except requests.exceptions.HTTPError as e:
-            if response.status_code == 429:
+            status = response.status_code
+            if status == 429:
                 print(f"Rate limit exceeded with API key {api_keys[current_key_index]}. Switching API key.")
                 current_key_index = (current_key_index + 1) % len(api_keys)
                 time.sleep(60)
+            elif status == 503:
+                print(f"Service unavailable for Bug #{bug_id}. Retrying with next API key after backoff.")
+                current_key_index = (current_key_index + 1) % len(api_keys)
+                time.sleep(30)
+                network_error_attempts += 1
             else:
                 print(f"Error fetching comments for Bug #{bug_id}: {e}")
                 return None
 
+
         except requests.exceptions.RequestException as e:
-            wait_time = min(60 * (2 ** network_error_attempts), 43200)  # Cap at 12 hours
+            wait_time = min(60 * (2 ** network_error_attempts), 43200)
             print(f"Network error for Bug #{bug_id} with API key {api_keys[current_key_index]}: {e}")
             print(f"Waiting {wait_time // 60}m {wait_time % 60}s before retrying...")
             current_key_index = (current_key_index + 1) % len(api_keys)
@@ -90,11 +93,10 @@ def fetch_comments(bug_id):
             network_error_attempts += 1
 
 
-# Function to fetch bugs with error handling, retry logic, and key rotation
 def fetch_bugs(existing_bugs, params):
     global current_key_index
-    max_retries = 5
     params['offset'] = len(existing_bugs)
+    bugs_since_last_save = 0
 
     while True:
         try:
@@ -117,11 +119,10 @@ def fetch_bugs(existing_bugs, params):
                 print("No more bugs found.")
                 break
 
-            # Process each bug
             for bug in bugs:
                 print(f"Fetching Bug #{bug.get('id')}: {bug.get('summary', 'No title available')}")
                 comments = fetch_comments(bug.get('id'))
-                
+
                 if comments is None:
                     save_data(existing_bugs)
                     print("Exiting due to failure to fetch comments.")
@@ -139,35 +140,52 @@ def fetch_bugs(existing_bugs, params):
                 }
 
                 existing_bugs.append(bug_record)
-                save_data(existing_bugs)  # Save immediately after adding
+                bugs_since_last_save += 1
 
-            # Save progress after each batch
-            save_data(existing_bugs)
+                if bugs_since_last_save >= 500:
+                    save_data(existing_bugs)
+                    print(f"Saved after {bugs_since_last_save} new bugs.")
+                    bugs_since_last_save = 0
 
-            # Increment the offset for pagination
             params['offset'] += len(bugs)
-            
-            # Delay to avoid hammering the server
             time.sleep(2)
 
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
                 print(f"Rate limit exceeded with API key {api_keys[current_key_index]}. Switching API key.")
-                current_key_index = (current_key_index + 1) % len(api_keys)  # Move to the next API key
+                current_key_index = (current_key_index + 1) % len(api_keys)
                 time.sleep(60)
             else:
                 print(f"Error fetching bugs: {e}")
                 break
-    
+
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed at offset {params['offset']} with API key {api_keys[current_key_index]}: {e}")
+            current_key_index = (current_key_index + 1) % len(api_keys)
+            time.sleep(30)
+            continue
+
+    # Final save
+    if bugs_since_last_save > 0:
+        save_data(existing_bugs)
+        print(f"Final save after last {bugs_since_last_save} bugs.")
+
     return existing_bugs
 
 
-start_time = datetime.datetime.now()
+if __name__ == "__main__":
+    start_time = datetime.datetime.now()
+    existing_bugs = load_existing_data()
 
-# Load existing bug reports if the file exists
-existing_bugs = load_existing_data()
-
-# Fetch new bugs starting from where we left off
-bugs = fetch_bugs(existing_bugs, params)
-
-print(f"Processed {len(bugs)} bugs in {(datetime.datetime.now() - start_time).total_seconds():.1f} seconds.")
+    try:
+        bugs = fetch_bugs(existing_bugs, params)
+        duration = (datetime.datetime.now() - start_time).total_seconds()
+        print(f"Processed {len(bugs)} bugs in {duration:.1f} seconds.")
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Saving data and exiting gracefully...")
+        save_data(existing_bugs)
+        print("Data saved. Goodbye.")
+    except requests.exceptions.RequestException as e:
+        print(f"Network error occurred during bug fetching: {e}")
+        save_data(existing_bugs)
+        print("Exiting due to persistent network issues.")
