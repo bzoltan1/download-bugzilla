@@ -6,7 +6,7 @@ from langchain.chains import RetrievalQA
 
 # Load vector DB and embedding model
 embedding = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-vectorstore = Chroma(persist_directory="bug_index", embedding_function=embedding)
+vectorstore = Chroma(persist_directory="chroma_db", embedding_function=embedding)
 
 # Set up local model via Ollama
 llm = OllamaLLM(model="mistral", temperature=0.1)
