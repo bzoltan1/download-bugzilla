@@ -9,7 +9,7 @@ from tqdm import tqdm
 import pickle
 
 # Configuration
-JSON_FILE = "bugs.json"
+JSON_FILE = "bug_reports.json"
 CHROMA_DIR = "chroma_db"
 CHECKPOINT_FILE = "indexed_bugs_checkpoint.pkl"
 
