@@ -75,7 +75,7 @@ This script processes a JSON file of Bugzilla bugs and indexes their content int
 
 | Parameter          | Value / Default                                 |
 |--------------------|--------------------------------------------------|
-| `JSON_FILE`        | `"bugs.json"`                                    |
+| `JSON_FILE`        | `"bug_reports.json"`                             |
 | `CHROMA_DIR`       | `"chroma_db"`                                    |
 | `CHECKPOINT_FILE`  | `"indexed_bugs_checkpoint.pkl"`                  |
 | `EMBED_MODEL`      | `"sentence-transformers/all-MiniLM-L6-v2"`       |
