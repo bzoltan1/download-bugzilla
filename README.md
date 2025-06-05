@@ -1,4 +1,4 @@
-#`index_bugs_to_chroma.py` - Bugzilla indexing script for chroma vector store
+# `index_bugs_to_chroma.py` - Bugzilla indexing script for chroma vector store
 This script processes a JSON file of Bugzilla bugs and indexes their content into a **Chroma** vector database using **sentence-transformer embeddings**. It supports **checkpointing** to allow resumption after interruptions and processes documents in batches to manage memory and API limits.
 
 ## Key Features
@@ -76,7 +76,7 @@ This script processes a JSON file of Bugzilla bugs and indexes their content int
 
 
 
-#`query_interface.py` Bugzilla RAG Query CLI Tool
+# `query_interface.py` Bugzilla RAG Query CLI Tool
 This script provides a **command-line interface (CLI)** to query a local Bugzilla dataset using a **Retrieval-Augmented Generation (RAG)** approach. It integrates a local vector database with a language model to answer user questions by retrieving and generating context-aware responses based on Bugzilla records.
 
 ## Key Features
@@ -135,7 +135,7 @@ This script provides a **command-line interface (CLI)** to query a local Bugzill
 - Suitable for local, resource-limited environments without cloud dependency.
 
 
-# Bugzilla RAG Query Web Interface - app.py
+# `app.py` - Bugzilla RAG Query Web Interface
 This script implements a lightweight Flask web application that serves as a front-end for querying a large, local Bugzilla dataset using a **Retrieval-Augmented Generation (RAG)** pipeline. It enables users to ask natural language questions and receive contextually grounded answers retrieved from a ChromaDB vector store and processed by a local language model.
 
 ## Key Features
