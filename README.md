@@ -1,5 +1,3 @@
-# Bugzilla RAG System – Flowchart
-
 ```mermaid
 graph TD
 
