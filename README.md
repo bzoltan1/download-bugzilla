@@ -1,4 +1,4 @@
-# Bugzilla RAG System - Flowchart
+# Bugzilla RAG System – Flowchart
 
 ```mermaid
 graph TD
@@ -9,25 +9,26 @@ C --> D[index_bugs_to_chroma.py: Index to ChromaDB]
 D --> E[chroma_db: Vector Store]
 
 subgraph Optional Testing
-A --> T[test_env.py: Environment Test]
+    A --> T[test_env.py: Environment Test]
 end
 
 E --> F1[query_interface.py: CLI RAG Interface]
 E --> F2[app.py: Web RAG Interface]
 
-subgraph RAG Query Flow
+%% CLI RAG Query Flow
 F1 --> G1[User Inputs Question]
 G1 --> H1[Search ChromaDB (Semantic Search)]
 H1 --> I1[Retrieve Top Documents]
 I1 --> J1[Generate Answer with Local Mistral LLM]
 J1 --> K1[Display Answer and Source Snippets]
 
+%% Web RAG Query Flow
 F2 --> G2[User Inputs via Web UI]
 G2 --> H2[Search ChromaDB (Semantic Search)]
 H2 --> I2[Retrieve Top Documents]
 I2 --> J2[Generate Answer with Local Mistral LLM]
 J2 --> K2[Display Answer and Source Snippets]
-end
+
 
 
 # `download_bugzilla.py` - Bugzilla Bug and Comment Fetcher
