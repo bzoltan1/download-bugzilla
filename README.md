@@ -1,23 +1,3 @@
-flowchart LR
-    A[setup_env.sh<br/>(Setup Env Vars)] --> B[download_bugzilla.py<br/>(Fetch bugs/comments)]
-    B --> C[bug_reports.json<br/>(Raw JSON output)]
-    C --> D[index_bugs_to_chroma.py<br/>(Embed & Index to DB)]
-    D --> E[ChromaDB Vector DB]
-
-    E --> F[Query Interfaces]
-    F --> F1[CLI Query Interface]
-    F --> F2[Web App (app.py)]
-
-    F1 --> G[Search ChromaDB<br/>(Semantic Search)]
-    F2 --> G
-
-    G --> H[Retrieve Top-k Docs]
-    H --> I[Mistral LLM (local)<br/>Generate Final Answer]
-    I --> J[Display Answer + Source]
-
-
-
-
 
 # `download_bugzilla.py` - Bugzilla Bug and Comment Fetcher
 Fetches bug reports and their associated comments from a Bugzilla REST API. It supports:
