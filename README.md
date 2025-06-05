@@ -1,3 +1,65 @@
+# `download_bugzilla.py` - Bugzilla Bug and Comment Fetcher
+Fetches bug reports and their associated comments from a Bugzilla REST API. It supports:
+- API key rotation
+- Rate limit handling
+- Incremental data saving
+- Graceful recovery from network errors or corrupt output
+
+
+## Configuration
+
+- **API Endpoint**
+  - Bug list: `https://<host>/rest/bug`
+  - Comments: `https://<host>/rest/bug/<bug_id>/comment`
+
+- **API Keys**
+  - `api_keys`: List of API keys used in a round-robin strategy
+  - On `429 Too Many Requests`, `503`, or timeout: rotates to the next key
+
+- **Fetch Parameters**
+  - `limit=500`
+  - `offset` calculated from length of previously fetched data
+
+- **Output File**
+  - `bug_reports.json`
+  - Corrupt JSON triggers automatic renaming to `.corrupt_backup`
+
+
+## Functionality
+
+- **Bug Fetching**
+  - Calls `/rest/bug` with paging support (`limit`, `offset`)
+  - Extracts: `id`, `summary`, `product`, `version`, `component`, `creation_time`, `status`
+
+- **Comment Fetching**
+  - For each bug, calls `/rest/bug/<id>/comment`
+  - Extracts: `creator`, `creation_time`, `text`
+  - Structured into a `"Comments"` array per bug
+
+- **Data Persistence**
+  - Data saved to `bug_reports.json`
+  - Autosaves after every 500 new bugs
+  - Final save on completion or keyboard interrupt
+
+- **Resumability**
+  - Loads and resumes from existing `bug_reports.json` using length for offset
+
+## Error Handling
+
+- **JSON Parsing Errors**
+  - Backs up corrupt `bug_reports.json` to `bug_reports.json.corrupt_backup`
+
+- **HTTP Errors**
+  - `429`: rotate key, sleep 60s
+  - `503`: rotate key, sleep 30s
+  - Other HTTP errors: log and skip
+
+- **Timeouts / Network Errors**
+  - Rotate key, exponential backoff (max 12 hours), retries indefinitely
+
+- **KeyboardInterrupt**
+  - Saves progress and exits cleanly
+
 # `index_bugs_to_chroma.py` - Bugzilla indexing script for chroma vector store
 This script processes a JSON file of Bugzilla bugs and indexes their content into a **Chroma** vector database using **sentence-transformer embeddings**. It supports **checkpointing** to allow resumption after interruptions and processes documents in batches to manage memory and API limits.
 
