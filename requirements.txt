@@ -1,0 +1,11 @@
+Flask
+markdown2
+tqdm
+langchain
+langchain-cli
+langchain-chroma
+langchain-huggingface
+langchain-community
+langchain-ollama
+sentence-transformers
+chromadb
