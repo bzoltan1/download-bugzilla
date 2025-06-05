@@ -10,7 +10,7 @@ import pickle
 
 # Configuration
 JSON_FILE = "bugs.json"
-CHROMA_DIR = "test_chroma_db"
+CHROMA_DIR = "chroma_db"
 CHECKPOINT_FILE = "indexed_bugs_checkpoint.pkl"
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
