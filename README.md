@@ -1,3 +1,35 @@
+```mermaid
+flowchart TD
+
+    A[setup_env.sh<br>System Setup Script] --> B[download_bugzilla.py<br>Fetch Bug Reports + Comments]
+    B --> C[bug_reports.json<br>(Structured JSON File)]
+    C --> D[index_bugs_to_chroma.py<br>Index into Chroma Vector DB]
+    D --> E[chroma_db/<br>Chroma Vector Store]
+    
+    subgraph RAG Interfaces
+        F[query_interface.py<br>CLI RAG Query Tool]
+        G[app.py<br>Flask Web RAG Interface]
+    end
+
+    E --> F
+    E --> G
+    F --> H[User CLI Questions]
+    G --> I[User Web Questions]
+    H --> J[Answer + Source Snippets]
+    I --> K[Answer + Source Snippets + ETA]
+
+    subgraph Local LLM Inference
+        L[Ollama<br>Mistral Model]
+    end
+
+    F --> L
+    G --> L
+markdown
+Copy
+Edit
+
+
+
 # `download_bugzilla.py` - Bugzilla Bug and Comment Fetcher
 Fetches bug reports and their associated comments from a Bugzilla REST API. It supports:
 - API key rotation
