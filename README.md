@@ -24,11 +24,6 @@ flowchart TD
 
     F --> L
     G --> L
-markdown
-Copy
-Edit
-
-
 
 # `download_bugzilla.py` - Bugzilla Bug and Comment Fetcher
 Fetches bug reports and their associated comments from a Bugzilla REST API. It supports:
