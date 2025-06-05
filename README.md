@@ -1,45 +1,20 @@
-+------------------+      +-------------------------+      +-------------------------+
-|  setup_env.sh    | ---> |  download_bugzilla.py   | ---> |    bug_reports.json      |
-| (Setup Env Vars) |      | (Fetch bugs/comments)   |      |  (Raw JSON output)       |
-+------------------+      +-------------------------+      +-------------------------+
+flowchart LR
+    A[setup_env.sh<br/>(Setup Env Vars)] --> B[download_bugzilla.py<br/>(Fetch bugs/comments)]
+    B --> C[bug_reports.json<br/>(Raw JSON output)]
+    C --> D[index_bugs_to_chroma.py<br/>(Embed & Index to DB)]
+    D --> E[ChromaDB Vector DB]
 
-           |
-           v
+    E --> F[Query Interfaces]
+    F --> F1[CLI Query Interface]
+    F --> F2[Web App (app.py)]
 
-+-------------------------+      +-------------------------+      +---------------------+
-|  index_bugs_to_chroma.py| ---> |   ChromaDB Vector DB    | ---> |  Query Interfaces    |
-|  (Embed & Index to DB)  |      |                         |      |  +---------------+  |
-+-------------------------+      +-------------------------+      |  | CLI Query     |  |
-                                                                |  | Interface    |  |
-                                                                |  +---------------+  |
-                                                                |  +---------------+  |
-                                                                |  | Web App (app.py)| |
-                                                                |  +---------------+  |
-                                                                +---------------------+
+    F1 --> G[Search ChromaDB<br/>(Semantic Search)]
+    F2 --> G
 
-                                                                      |
-                                                                      v
+    G --> H[Retrieve Top-k Docs]
+    H --> I[Mistral LLM (local)<br/>Generate Final Answer]
+    I --> J[Display Answer + Source]
 
-                                                            +-------------------------+
-                                                            |  Search ChromaDB         |
-                                                            |   (Semantic Search)      |
-                                                            +------------+------------+
-                                                                         |
-                                                                         v
-                                                            +-------------------------+
-                                                            |  Retrieve Top-k Docs     |
-                                                            +------------+------------+
-                                                                         |
-                                                                         v
-                                                            +-------------------------+
-                                                            |  Mistral LLM (local)    |
-                                                            |  Generate Final Answer  |
-                                                            +------------+------------+
-                                                                         |
-                                                                         v
-                                                            +-------------------------+
-                                                            |  Display Answer + Source|
-                                                            +-------------------------+
 
 
 
