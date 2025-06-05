@@ -1,4 +1,4 @@
-# Bugzilla Indexing Script for Chroma Vector Store - index_bugs_to_chroma.py
+# Bugzilla indexing script for chroma vector store - `index_bugs_to_chroma.py`
 This script processes a JSON file of Bugzilla bugs and indexes their content into a **Chroma** vector database using **sentence-transformer embeddings**. It supports **checkpointing** to allow resumption after interruptions and processes documents in batches to manage memory and API limits.
 
 ## Key Features
