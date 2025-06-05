@@ -1,29 +1,34 @@
+# Bugzilla RAG System - Flowchart
+
 ```mermaid
-flowchart TD
+graph TD
 
-    A[setup_env.sh<br>System Setup Script] --> B[download_bugzilla.py<br>Fetch Bug Reports + Comments]
-    B --> C[bug_reports.json<br>(Structured JSON File)]
-    C --> D[index_bugs_to_chroma.py<br>Index into Chroma Vector DB]
-    D --> E[chroma_db/<br>Chroma Vector Store]
-    
-    subgraph RAG Interfaces
-        F[query_interface.py<br>CLI RAG Query Tool]
-        G[app.py<br>Flask Web RAG Interface]
-    end
+A[setup_env.sh: Setup Environment] --> B[download_bugzilla.py: Fetch Bug Reports & Comments]
+B --> C[bug_reports.json: Raw JSON File]
+C --> D[index_bugs_to_chroma.py: Index to ChromaDB]
+D --> E[chroma_db: Vector Store]
 
-    E --> F
-    E --> G
-    F --> H[User CLI Questions]
-    G --> I[User Web Questions]
-    H --> J[Answer + Source Snippets]
-    I --> K[Answer + Source Snippets + ETA]
+subgraph Optional Testing
+A --> T[test_env.py: Environment Test]
+end
 
-    subgraph Local LLM Inference
-        L[Ollama<br>Mistral Model]
-    end
+E --> F1[query_interface.py: CLI RAG Interface]
+E --> F2[app.py: Web RAG Interface]
 
-    F --> L
-    G --> L
+subgraph RAG Query Flow
+F1 --> G1[User Inputs Question]
+G1 --> H1[Search ChromaDB (Semantic Search)]
+H1 --> I1[Retrieve Top Documents]
+I1 --> J1[Generate Answer with Local Mistral LLM]
+J1 --> K1[Display Answer and Source Snippets]
+
+F2 --> G2[User Inputs via Web UI]
+G2 --> H2[Search ChromaDB (Semantic Search)]
+H2 --> I2[Retrieve Top Documents]
+I2 --> J2[Generate Answer with Local Mistral LLM]
+J2 --> K2[Display Answer and Source Snippets]
+end
+
 
 # `download_bugzilla.py` - Bugzilla Bug and Comment Fetcher
 Fetches bug reports and their associated comments from a Bugzilla REST API. It supports:
