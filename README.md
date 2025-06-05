@@ -1,4 +1,4 @@
-# Bugzilla indexing script for chroma vector store - `index_bugs_to_chroma.py`
+#`index_bugs_to_chroma.py` - Bugzilla indexing script for chroma vector store
 This script processes a JSON file of Bugzilla bugs and indexes their content into a **Chroma** vector database using **sentence-transformer embeddings**. It supports **checkpointing** to allow resumption after interruptions and processes documents in batches to manage memory and API limits.
 
 ## Key Features
@@ -76,7 +76,7 @@ This script processes a JSON file of Bugzilla bugs and indexes their content int
 
 
 
-# Bugzilla RAG Query CLI Tool - query_interface.py
+#`query_interface.py` Bugzilla RAG Query CLI Tool
 This script provides a **command-line interface (CLI)** to query a local Bugzilla dataset using a **Retrieval-Augmented Generation (RAG)** approach. It integrates a local vector database with a language model to answer user questions by retrieving and generating context-aware responses based on Bugzilla records.
 
 ## Key Features
