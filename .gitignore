@@ -1,0 +1,40 @@
+# Secrets — never commit
+.env
+
+# Runtime data — too large for git
+data/
+chroma_db/
+dev_chroma_db/
+dev_chroma_db_v2/
+test_chroma_db/
+bug_reports.json
+bug_reports.json.corrupt_backup
+
+# Indexer checkpoint (legacy)
+indexed_bugs_checkpoint.pkl
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+bugzilla-env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

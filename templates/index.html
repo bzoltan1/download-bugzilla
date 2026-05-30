@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bugzilla RAG — Ask 579k SUSE Bug Reports</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2em 1.5em;
+      background: #f5f5f5;
+      color: #222;
+      line-height: 1.6;
+    }
+
+    h1 { font-size: 1.8em; margin-bottom: 0.2em; }
+    h2 { font-size: 1.2em; margin-top: 1.5em; }
+    h3 { font-size: 1em; margin-top: 1.5em; color: #444; }
+
+    a { color: #0066cc; }
+
+    .about {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-left: 4px solid #0066cc;
+      border-radius: 6px;
+      padding: 1em 1.2em;
+      margin-bottom: 1.5em;
+      font-size: 0.93em;
+      color: #333;
+    }
+    .about p { margin: 0.4em 0; }
+    .about code { background: #eef; padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.92em; }
+
+    .status-bar {
+      display: flex;
+      gap: 1.5em;
+      font-size: 0.88em;
+      color: #555;
+      margin-bottom: 1em;
+    }
+    .status-bar span { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 0.3em 0.7em; }
+
+    form { margin-bottom: 1em; }
+    textarea {
+      width: 100%;
+      font-size: 1em;
+      padding: 0.6em 0.8em;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      resize: vertical;
+      font-family: inherit;
+    }
+    textarea:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px #cce0ff; }
+
+    .form-footer { display: flex; align-items: center; gap: 1em; margin-top: 0.5em; }
+
+    button {
+      padding: 0.5em 1.4em;
+      font-size: 1em;
+      background: #0066cc;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    button:hover { background: #0052a3; }
+    button:disabled { background: #88aacc; cursor: not-allowed; }
+
+    #loading { display: none; color: #555; font-style: italic; font-size: 0.93em; }
+
+    .answer-box {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 1.2em 1.4em;
+      margin-top: 1.2em;
+    }
+    .answer-box .meta { font-size: 0.85em; color: #666; margin-bottom: 0.8em; }
+    .answer-body { line-height: 1.7; }
+    .answer-body p { margin: 0.6em 0; }
+    .answer-body ul, .answer-body ol { padding-left: 1.5em; }
+    .answer-body code { background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; font-size: 0.92em; }
+    .answer-body pre { background: #f0f0f0; padding: 0.8em; border-radius: 6px; overflow-x: auto; }
+
+    .sources { margin-top: 1.4em; }
+    .source-card {
+      background: #fafafa;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 0.9em 1.1em;
+      margin-bottom: 0.8em;
+      font-size: 0.88em;
+    }
+    .source-card .source-header { font-weight: 600; margin-bottom: 0.5em; }
+    .source-card .source-header a { text-decoration: none; }
+    .source-card .source-header a:hover { text-decoration: underline; }
+    .source-meta { color: #666; font-size: 0.85em; margin-bottom: 0.5em; }
+    .source-body { white-space: pre-wrap; color: #333; line-height: 1.5; max-height: 220px; overflow-y: auto; }
+
+    .error-box {
+      background: #fff0f0;
+      border: 1px solid #f5c6c6;
+      border-radius: 6px;
+      padding: 1em 1.2em;
+      margin-top: 1em;
+      color: #c00;
+    }
+  </style>
+
+  <script>
+    function showLoading() {
+      document.getElementById("loading").style.display = "inline";
+      document.getElementById("ask-btn").disabled = true;
+    }
+
+    async function updateStatus() {
+      try {
+        const [sRes, eRes] = await Promise.all([fetch('/status'), fetch('/eta')]);
+        const s = await sRes.json();
+        const e = await eRes.json();
+        document.getElementById("status-requests").textContent =
+          s.processing === 0 ? "Idle" : `${s.processing} query in progress`;
+        document.getElementById("status-eta").textContent =
+          s.processing === 0 ? "" : `Est. wait: ~${e.eta}s`;
+      } catch (_) {}
+    }
+
+    window.onload = updateStatus;
+  </script>
+</head>
+<body>
+
+  <h1>Ask Bugzilla</h1>
+
+  <div class="about">
+    <p>
+      Natural-language search over <strong>578,982 SUSE Bugzilla records</strong>
+      (bugs #1 through mid-2026), fully indexed locally.
+      See the <a href="https://bzoltan1.github.io/building-a-local-bugzilla-rag-system/" target="_blank">blog post</a>
+      for background.
+    </p>
+    <p>
+      Pipeline: <code>all-MiniLM-L6-v2</code> embeddings &rarr; ChromaDB (42 GB, ~3.5M chunks) &rarr;
+      <code>qwen3-coder:30b</code> via Ollama &rarr; answer with source links.
+      Everything runs locally — no cloud, no GPU.
+    </p>
+  </div>
+
+  <div class="status-bar">
+    <span id="status-requests">Checking...</span>
+    <span id="status-eta" style="display:none"></span>
+  </div>
+
+  <form method="post" onsubmit="showLoading()">
+    <textarea name="question" rows="4"
+      placeholder="e.g. What kernel CVE bugs were fixed in SLE 15 SP4?&#10;e.g. Are there open btrfs hang bugs with NFS?&#10;e.g. What Docker CVEs were reported between 2014 and 2016?">{{ question }}</textarea>
+    <div class="form-footer">
+      <button id="ask-btn" type="submit">Ask</button>
+      <span id="loading">Processing... (this takes ~40 seconds)</span>
+    </div>
+  </form>
+
+  {% if error %}
+  <div class="error-box"><strong>Error:</strong> {{ error }}</div>
+  {% endif %}
+
+  {% if answer %}
+  <div class="answer-box">
+    <div class="meta">Answer generated in {{ elapsed }}s</div>
+    <div class="answer-body">{{ answer|safe }}</div>
+  </div>
+
+  {% if sources %}
+  <div class="sources">
+    <h3>Source bug reports retrieved (top {{ sources|length }})</h3>
+    {% for doc in sources %}
+    <div class="source-card">
+      <div class="source-header">
+        {% if doc.bug_link %}
+          <a href="{{ doc.bug_link }}" target="_blank">Bug #{{ doc.bug_id }}</a>
+        {% else %}
+          Bug #{{ doc.bug_id }}
+        {% endif %}
+        {% if doc.title %} &mdash; {{ doc.title }}{% endif %}
+      </div>
+      {% if doc.meta_line %}
+      <div class="source-meta">{{ doc.meta_line }}</div>
+      {% endif %}
+      <div class="source-body">{{ doc.snippet }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+
+</body>
+</html>

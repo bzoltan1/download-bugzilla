@@ -1,0 +1,36 @@
+# Data — never baked into image, provided at runtime via volumes
+data/
+chroma_db/
+dev_chroma_db/
+dev_chroma_db_v2/
+test_chroma_db/
+bug_reports.jsonl
+
+# Python runtime artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+bugzilla-env/
+dist/
+build/
+.eggs/
+
+# Secrets
+.env
+
+# Logs
+logs/
+
+# Version control
+.git/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation (not needed in image)
+*.md
+PLAN.md
+README.md

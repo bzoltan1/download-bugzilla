@@ -1,262 +1,334 @@
+# Bugzilla RAG System
 
-# `download_bugzilla.py` - Bugzilla Bug and Comment Fetcher
-Fetches bug reports and their associated comments from a Bugzilla REST API. It supports:
-- API key rotation
-- Rate limit handling
-- Incremental data saving
-- Graceful recovery from network errors or corrupt output
+A local, offline Retrieval-Augmented Generation (RAG) system that downloads SUSE Bugzilla
+records, embeds them into a vector database, and answers natural-language questions about
+historical bugs using a locally-running LLM. No cloud services required.
 
+Originally described in the blog post:
+[Building a Local Bugzilla RAG System](https://bzoltan1.github.io/building-a-local-bugzilla-rag-system/)
 
-## Configuration
+---
 
-- **API Endpoint**
-  - Bug list: `https://<host>/rest/bug`
-  - Comments: `https://<host>/rest/bug/<bug_id>/comment`
+## Overview
 
-- **API Keys**
-  - `api_keys`: List of API keys used in a round-robin strategy
-  - On `429 Too Many Requests`, `503`, or timeout: rotates to the next key
+The system is a four-stage pipeline:
 
-- **Fetch Parameters**
-  - `limit=500`
-  - `offset` calculated from length of previously fetched data
+```
+[bugzilla.suse.com REST API]
+         |
+         | bugzilla-download [--limit N] [--since DATE]
+         v
+  data/bug_reports.jsonl       (append-only, streaming, resumable)
+         |
+         | bugzilla-index [--input FILE] [--db DIR]
+         v
+  chroma_db/                   (ChromaDB vector store, ~46 GB for 579k bugs)
+         |
+         | bugzilla-query      (interactive CLI)
+         | bugzilla-serve      (Flask web UI on :5000)
+         v
+  [Natural-language answers with links to source bug reports]
+```
 
-- **Output File**
-  - `bug_reports.json`
-  - Corrupt JSON triggers automatic renaming to `.corrupt_backup`
+| Stage | Script | Purpose |
+|---|---|---|
+| 1 | `download_bugzilla.py` | Fetch bugs + comments from Bugzilla REST API |
+| 2 | `index_bugs_to_chroma.py` | Embed bugs into overlapping chunks, store in ChromaDB |
+| 3 | `query_cli.py` | Interactive CLI query interface |
+| 4 | `app.py` | Flask web interface |
+| — | `rag_engine.py` | Shared RAG engine (imported by stages 3 and 4) |
 
+---
 
-## Functionality
+## Deploying with Docker (recommended)
 
-- **Bug Fetching**
-  - Calls `/rest/bug` with paging support (`limit`, `offset`)
-  - Extracts: `id`, `summary`, `product`, `version`, `component`, `creation_time`, `status`
+This is the fastest way to get the system running. The Docker image contains only the
+application code and model weights — **no bug data**. You receive the ChromaDB index
+separately from the data owner via rsync.
 
-- **Comment Fetching**
-  - For each bug, calls `/rest/bug/<id>/comment`
-  - Extracts: `creator`, `creation_time`, `text`
-  - Structured into a `"Comments"` array per bug
+### Prerequisites
 
-- **Data Persistence**
-  - Data saved to `bug_reports.json`
-  - Autosaves after every 500 new bugs
-  - Final save on completion or keyboard interrupt
+| Requirement | Notes |
+|---|---|
+| Docker Engine + Docker Compose | [Install Docker](https://docs.docker.com/get-docker/) |
+| ~72 GB free disk | 46 GB index + 18 GB LLM model + 6 GB image + overhead |
+| Network access to the data owner | For the rsync step |
 
-- **Resumability**
-  - Loads and resumes from existing `bug_reports.json` using length for offset
+### Step 1 — Clone the repository
 
-## Error Handling
+```bash
+git clone https://github.com/bzoltan1/download-bugzilla.git
+cd download-bugzilla
+```
 
-- **JSON Parsing Errors**
-  - Backs up corrupt `bug_reports.json` to `bug_reports.json.corrupt_backup`
+### Step 2 — Configure
 
-- **HTTP Errors**
-  - `429`: rotate key, sleep 60s
-  - `503`: rotate key, sleep 30s
-  - Other HTTP errors: log and skip
+```bash
+cp .env.example .env
+```
 
-- **Timeouts / Network Errors**
-  - Rotate key, exponential backoff (max 12 hours), retries indefinitely
+No edits are required for basic use. Leave `OLLAMA_BASE_URL` unchanged — the default
+`http://ollama:11434` is correct inside the Docker Compose network. Setting it to
+`localhost` will break queries.
 
-- **KeyboardInterrupt**
-  - Saves progress and exits cleanly
+### Step 3 — Build the application image
 
-# `index_bugs_to_chroma.py` - Bugzilla indexing script for chroma vector store
-This script processes a JSON file of Bugzilla bugs and indexes their content into a **Chroma** vector database using **sentence-transformer embeddings**. It supports **checkpointing** to allow resumption after interruptions and processes documents in batches to manage memory and API limits.
+This downloads Python dependencies and the MiniLM embedding model (~3.5 GB total).
+Only needed once; the image is cached locally after the first build.
 
-## Key Features
-- Reads structured bug data from a JSON file.
-- Converts bug entries (metadata + comments) into text documents.
-- Uses HuggingFace's MiniLM embedding model.
-- Stores embeddings in Chroma DB with persistence.
-- Implements batching and checkpointing for fault-tolerant processing.
-- Logs progress, warnings, and errors throughout indexing.
+```bash
+docker compose build
+```
 
-## Configuration
+### Step 4 — Pull the LLM model
 
-| Parameter          | Value / Default                                 |
-|--------------------|--------------------------------------------------|
-| `JSON_FILE`        | `"bug_reports.json"`                             |
-| `CHROMA_DIR`       | `"chroma_db"`                                    |
-| `CHECKPOINT_FILE`  | `"indexed_bugs_checkpoint.pkl"`                  |
-| `EMBED_MODEL`      | `"sentence-transformers/all-MiniLM-L6-v2"`       |
-| `BATCH_SIZE`       | `1000`                                           |
+Start the Ollama service and download the language model (~18 GB, one-time):
 
-## Workflow Description
+```bash
+docker compose up -d ollama
+docker compose exec ollama ollama pull qwen3-coder:30b
+```
 
-### 1. Loading Bugs
-- Reads the full list of bugs from a JSON file into memory.
-- Each bug is expected to have fields like `bug_number`, `title`, `Product`, `version`, `Component`, `Status`, `Reported`, and `Comments`.
+This takes 10–60 minutes depending on your internet speed. Check progress with:
 
-### 2. Checkpointing
-- Keeps track of indexed bug IDs using a pickle file (`indexed_bugs_checkpoint.pkl`).
-- Prevents reprocessing already-indexed documents across runs.
+```bash
+docker compose logs -f ollama
+```
 
-### 3. Bug-to-Text Conversion
-- `bug_to_text(bug)` creates a human-readable string from bug metadata and comment threads.
-- Skips bugs with empty content after formatting.
+### Step 5 — Receive the ChromaDB index
 
-### 4. Document Creation
-- `create_documents()` builds a list of `Document` objects containing formatted text and `bug_id` metadata.
+Contact the data owner and provide your server's hostname or IP address. They will
+rsync the pre-built index directly to your machine (~46 GB):
 
-### 5. Vector Store and Embedding
-- Initializes `HuggingFaceEmbeddings` with MiniLM model.
-- Creates or loads a Chroma vector store from the `chroma_db` directory.
-- Documents are embedded and added in batches to the vector store.
+```bash
+# The data owner runs this command on their machine:
+rsync -avz --progress \
+  /home/balogh/download-bugzilla/chroma_db/ \
+  you@your-host:/path/to/download-bugzilla/chroma_db/
+```
 
-### 6. Indexing Loop
-- Batches are created from the filtered list of unindexed bugs.
-- For each batch:
-  - Converts to documents.
-  - Filters out empty documents.
-  - Adds them to the vector store.
-  - Updates the checkpoint file with newly indexed bug IDs.
+You can monitor the transfer on your end:
 
-### 7. Final DB Size
-- Logs the final size of the `chroma.sqlite3` database (if it exists).
+```bash
+watch -n5 "du -sh chroma_db/"
+```
 
-## Logging and Progress
-- Uses Python’s `logging` module for clear timestamps and log levels.
-- Uses `tqdm` progress bars for batch indexing visualization.
+### Step 6 — Start the application
 
-## Dependencies
-- `langchain_huggingface`
-- `langchain_chroma`
-- `tqdm`
-- `pickle`
-- `json`
-- `os`
-- `logging`
-- `time`
+```bash
+docker compose up -d app
+docker compose logs -f app
+```
 
-## Usage
-1. Place your Bugzilla data in a file called `bugs.json`.
-2. Make a huge portion of hot bewerage and be prepared to wait forever
-3. Run the script in a terminal
-   ```bash
-   python index_bugs_to_chroma.py
-   ```
+The application starts in seconds. You will see:
 
+```
+[entrypoint] Index found (42G) — skipping indexer.
+[entrypoint] Starting Flask on 0.0.0.0:5000 ...
+```
 
+### Step 7 — Open the web interface
 
-# `query_interface.py` Bugzilla RAG Query CLI Tool
-This script provides a **command-line interface (CLI)** to query a local Bugzilla dataset using a **Retrieval-Augmented Generation (RAG)** approach. It integrates a local vector database with a language model to answer user questions by retrieving and generating context-aware responses based on Bugzilla records.
+```
+http://localhost:5000
+```
 
-## Key Features
-- **Multiline User Input**: Supports multi-line questions terminated by typing `###` on a new line.
-- **Semantic Search**: Uses a vector store with sentence embeddings to find relevant Bugzilla documents.
-- **Local Language Model**: Generates answers locally using the Ollama-hosted `mistral` model.
-- **Source Document Display**: Prints top retrieved source snippets alongside the generated answer.
-- **Simple CLI loop** with graceful keyboard interrupt handling.
+Or replace `localhost` with your server's hostname if accessing remotely.
 
-## Architecture Components
+---
 
-### 1. Vector Store and Embeddings
-- Uses **HuggingFaceEmbeddings** with model `"sentence-transformers/all-MiniLM-L6-v2"` for converting queries and documents into embeddings.
-- **Chroma** vector store loads a persisted index from `chroma_db` directory.
-- Vector store retrieval fetches the top 3 (`k=3`) most relevant documents.
+## Running the demo query script
 
-### 2. Language Model
-- Connects to local LLM via **OllamaLLM**, specifically the `"mistral"` model.
-- Temperature parameter is set to `0.1` to generate consistent and less random responses.
+A non-interactive demo runner is included with five curated showcase queries:
 
-### 3. RetrievalQA Chain
-- Combines retriever and LLM to form a RAG chain.
-- Configured to return both generated answers and source documents.
+```bash
+docker compose exec app python demo_queries.py
+```
 
-### 4. User Input Handling
-- `get_multiline_input` function:
-  - Prompts user to enter multi-line queries.
-  - Input ends when user types `###` on a new line or EOF is reached.
-- Prints processing status while querying.
+Or run a single query by number (1–5):
 
-### 5. Output
-- Prints the generated answer with elapsed time.
-- Lists the top 3 matching Bugzilla document snippets (truncated to 1000 chars).
+```bash
+docker compose exec app python demo_queries.py --queries 1
+```
 
-### 6. Control Flow
-- Runs an infinite loop prompting user input.
-- Handles `KeyboardInterrupt` (Ctrl+C) to exit cleanly.
+---
 
-## Dependencies
-- `langchain_chroma` — Chroma vector DB integration.
-- `langchain_huggingface` — HuggingFace sentence embeddings.
-- `langchain_ollama` — Ollama local LLM wrapper.
-- Standard Python libraries: `time`, `input`.
+## Alternative: build the index from scratch
 
-## Usage
-1. Run the script in a terminal.
-2. Type your multi-line question.
-3. End input with `###`.
-4. Wait for the response and source snippets.
-5. Repeat or press Ctrl+C to exit.
+If you have the raw JSONL file (`bug_reports.jsonl`, ~4 GB) and want to build the
+index yourself instead of receiving it via rsync, place the file next to
+`docker-compose.yml` and set the path:
 
-## Deployment Notes
-- Requires:
-  - Prebuilt Chroma vector store at `chroma_db`.
-  - Local Ollama server running with the `mistral` model available.
-- Suitable for local, resource-limited environments without cloud dependency.
+```bash
+BUGZILLA_JSONL_HOST_PATH=./bug_reports.jsonl docker compose up app
+```
 
+The entrypoint detects that `chroma_db/` is empty and starts the indexer automatically.
+Indexing 579k bugs takes approximately **15 hours** on a modern CPU.
 
-# `app.py` - Bugzilla RAG Query Web Interface
-This script implements a lightweight Flask web application that serves as a front-end for querying a large, local Bugzilla dataset using a **Retrieval-Augmented Generation (RAG)** pipeline. It enables users to ask natural language questions and receive contextually grounded answers retrieved from a ChromaDB vector store and processed by a local language model.
+---
 
-## Key Features
-- **Web Interface** for inputting user questions and displaying answers with sources.
-- **RAG Pipeline Integration** using:
-  - **`all-MiniLM-L6-v2`** for sentence embeddings.
-  - **ChromaDB** as the vector store.
-  - A language model backend (e.g., **LLaMA via Ollama**) for answer generation.
-- **Real-Time Server Load Tracking**:
-  - Concurrent request count.
-  - Estimated wait time computed from a rolling window of recent processing durations.
+## Running without Docker (bare-metal / venv)
 
-## Architecture Components
+### Requirements
 
-### 1. Frontend
-- HTML rendered via `render_template_string()` with inline CSS and JS.
-- Functional Elements:
-  - Input: Textarea for user questions.
-  - Output: Rendered Markdown answer, source snippets, system status.
-  - JavaScript fetches `/status` and `/eta` endpoints to show:
-    - Active query count.
-    - Estimated wait time.
+- Python 3.11 or later
+- [Ollama](https://ollama.com) with `qwen3-coder:30b` pulled
+- ~50 GB free disk
 
-### 2. Backend
-- **Flask Web Server**
-  - Routes:
-    - `/`: Handles GET (page load) and POST (query submission).
-    - `/status`: Returns current number of processing requests.
-    - `/eta`: Calculates ETA based on average processing times from a `deque`.
+### On openSUSE / SUSE
 
-- **Thread-Safe Request Management**
-  - Global counter `processing_requests` tracks concurrent queries.
-  - `deque` (maxlen=50) records recent durations for ETA.
-  - `threading.Lock` ensures safe access to shared state.
+```bash
+sudo zypper install python313 ollama
+sudo systemctl enable --now ollama
+ollama pull qwen3-coder:30b
+```
 
-- **Bugzilla Query Handling**
-  - `query_bugzilla(question)` is called to:
-    - Retrieve semantically relevant documents.
-    - Generate an answer.
-  - Markdown is rendered to HTML via `markdown2.markdown()`.
+### Install Python dependencies
 
-### 3. Dependencies
-- Python modules:
-  - `flask`
-  - `markdown2`
-  - `threading`,
-  - `time`,
-  - `collections.deque`
-  - Custom module: `query_interface`
+```bash
+python3 -m venv bugzilla-env
+bugzilla-env/bin/pip install -r requirements.txt
+```
 
-## Deployment
-- Runs on `0.0.0.0:5000` with `debug=True` for development.
-- Requires local setup of:
-  - ChromaDB with pre-indexed Bugzilla documents.
-  - LLM inference engine (e.g., Ollama running LLaMA or similar).
+### Configure
 
-## Usage Example
-A user enters:  
-> "How was bug 123456 resolved?"  
-The system retrieves semantically related documents, generates an answer using the language model, and presents it alongside links to the relevant Bugzilla records.
+```bash
+cp .env.example .env
+# Edit .env: set OLLAMA_BASE_URL=http://localhost:11434
+#            set CHROMA_DIR=chroma_db/
+```
 
+### Run
+
+```bash
+# Web interface
+bugzilla-env/bin/python app.py --db chroma_db/
+
+# Interactive CLI
+bugzilla-env/bin/python query_cli.py --db chroma_db/
+
+# Demo queries
+bugzilla-env/bin/python demo_queries.py --db chroma_db/
+```
+
+---
+
+## Downloading bug data (data owners only)
+
+This section is only relevant if you are building or refreshing the dataset.
+
+### First-time full download
+
+A full download of ~579k bugs takes approximately **8 days** with 29 API keys
+rotating on rate limits. Run it in a persistent screen session:
+
+```bash
+mkdir -p data logs
+screen -dmS bugzilla-download bash -c \
+  'bugzilla-env/bin/python download_bugzilla.py \
+   --output data/bug_reports.jsonl >> logs/download.log 2>&1'
+
+# Monitor
+tail -f logs/download.log
+wc -l data/bug_reports.jsonl
+```
+
+### Incremental update
+
+Fetch only bugs created or updated since a given date (typically 30–60 minutes):
+
+```bash
+bugzilla-env/bin/python download_bugzilla.py \
+  --since 2026-05-30 \
+  --output data/bug_reports.jsonl
+```
+
+### Indexing
+
+```bash
+screen -dmS bugzilla-index bash -c \
+  'bugzilla-env/bin/python index_bugs_to_chroma.py \
+   --input data/bug_reports.jsonl \
+   --db chroma_db/ >> logs/index.log 2>&1'
+
+# Monitor
+tail -f logs/index.log
+ls -lh chroma_db/chroma.sqlite3
+```
+
+The indexer is fully resumable — it queries ChromaDB for already-indexed bug IDs at
+startup and skips them.
+
+---
+
+## Project structure
+
+```
+download-bugzilla/
+  app.py                    # Stage 4: Flask web interface
+  rag_engine.py             # Shared RAG engine (no side effects on import)
+  query_cli.py              # Stage 3: Interactive CLI query interface
+  index_bugs_to_chroma.py   # Stage 2: Embed and index bugs into ChromaDB
+  download_bugzilla.py      # Stage 1: Download bugs from Bugzilla REST API
+  demo_queries.py           # Non-interactive demo runner (5 showcase queries)
+  templates/
+    index.html              # Flask Jinja2 template
+  Dockerfile                # Application image (code only, no data)
+  docker-compose.yml        # Orchestrates app + ollama services
+  entrypoint.sh             # Container start-up logic (index or serve)
+  .env.example              # Configuration template
+  requirements.txt          # Pinned Python dependencies
+  PLAN.md                   # Full design document and session log
+  data/                     # Runtime data (gitignored)
+    bug_reports.jsonl       # 579k bugs, 4.0 GB (not in repo)
+  chroma_db/                # ChromaDB vector store, 46 GB (not in repo)
+  logs/                     # Runtime logs (gitignored)
+  bugzilla-env/             # Python virtual environment (gitignored)
+```
+
+---
+
+## Configuration reference
+
+All configuration is via `.env` (copy from `.env.example`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `BUGZILLA_BASE_URL` | `https://bugzilla.suse.com/rest/bug` | Bugzilla REST API base URL |
+| `BUGZILLA_API_KEYS` | — | Comma-separated API keys (for downloading only) |
+| `BUGZILLA_JSONL` | `data/bug_reports.jsonl` | Path to JSONL bug data |
+| `CHROMA_DIR` | `chroma_db/` | ChromaDB directory |
+| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Must match at index and query time |
+| `OLLAMA_MODEL` | `qwen3-coder:30b` | LLM model name |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint (use `http://ollama:11434` in Docker) |
+| `OLLAMA_TEMPERATURE` | `0.1` | LLM temperature |
+| `RAG_TOP_K` | `3` | Source chunks retrieved per query |
+| `INDEX_BATCH_SIZE` | `200` | Bugs per ChromaDB write batch |
+
+---
+
+## Performance reference
+
+Measured on AMD Ryzen 7 PRO 7840U (16 cores, 64 GB RAM), openSUSE Tumbleweed, CPU-only.
+
+| Stage | Dataset | Time | Notes |
+|---|---|---|---|
+| Download (full) | 579k bugs | ~8 days | 29 API keys rotating on rate limits |
+| Download (incremental) | ~6k bugs | ~30 min | `--since DATE`; 7–8 s/page server-side |
+| Index (full, v2 chunked) | 579k bugs | ~15 hours | 3–7 bugs/sec; ~3.5M chunks; 46 GB DB |
+| Query | 579k bug index | ~40 s | `qwen3-coder:30b`; top-k=3 |
+
+### LLM benchmark
+
+| Model | Size | Quant | Time/query | Quality |
+|---|---|---|---|---|
+| `llama3:latest` | 8B | Q4_0 | 38.8 s | Correct but terse |
+| `qwen2.5:7b` | 7.6B | Q4_K_M | 57.9 s | Well-structured; slowest |
+| **`qwen3-coder:30b`** | **30.5B** | **Q4_K_M** | **40.2 s** | **Most thorough; recommended** |
+
+---
+
+## License
+
+GNU General Public License v2. See [LICENSE](LICENSE).

@@ -1,160 +1,190 @@
-from flask import Flask, request, render_template_string, jsonify
-from query_interface import query_bugzilla
-import markdown2
+"""
+Stage 4: Flask web interface for the Bugzilla RAG system.
+
+Usage:
+    python app.py [--db DIR] [--port N] [--host ADDR]
+    bugzilla-serve [--db DIR] [--port N] [--host ADDR]
+
+Routes:
+    GET  /        Query form
+    POST /        Run RAG query, render results
+    GET  /status  JSON: {"processing": N}
+    GET  /eta     JSON: {"eta": seconds}
+"""
+
+import argparse
+import logging
+import os
 import threading
 import time
 from collections import deque
 
+import markdown2
+from dotenv import load_dotenv
+from flask import Flask, jsonify, render_template, request
+
+import rag_engine
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_CHROMA_DIR = os.getenv("CHROMA_DIR", "chroma_db")
+BUGZILLA_BASE_URL  = os.getenv("BUGZILLA_BASE_URL", "https://bugzilla.suse.com/rest/bug")
+# Derive the bug viewer URL from the base API URL
+_base = BUGZILLA_BASE_URL.replace("/rest/bug", "")
+BUGZILLA_BUG_URL   = f"{_base}/show_bug.cgi?id="
+
 app = Flask(__name__)
 
-# Track processing requests and durations
-processing_requests = 0
-request_durations = deque(maxlen=50)
-lock = threading.Lock()
-
-TEMPLATE = """
-<!doctype html>
-<html>
-<head>
-  <title>Bugzilla RAG Query</title>
-  <style>
-    body { font-family: sans-serif; max-width: 800px; margin: auto; padding: 2em; }
-    .response { background: #f9f9f9; padding: 1em; border-radius: 8px; margin-top: 1em; }
-    .source-snippet { margin-top: 1em; padding: 1em; background: #fafafa; border: 1px solid #ccc; border-radius: 6px; }
-    textarea { width: 100%; font-size: 1em; padding: 0.5em; }
-    button { padding: 0.5em 1em; font-size: 1em; margin-top: 0.5em; }
-    #loading { display: none; color: #555; font-style: italic; margin-top: 1em; }
-    .notice { font-size: 0.9em; color: #444; margin-bottom: 1em; background: #eef; padding: 1em; border-radius: 6px; }
-  </style>
-  <script>
-    function showLoading() {
-      document.getElementById("loading").style.display = "block";
-      document.getElementById("ask-btn").disabled = true;
-    }
-
-    async function updateStatus() {
-      const res = await fetch('/status');
-      const data = await res.json();
-      document.getElementById("status").innerText =
-        `${data.processing} request(s) in progress`;
-
-      const etaRes = await fetch('/eta');
-      const eta = await etaRes.json();
-      document.getElementById("eta").innerText =
-        `Estimated wait time: ~${eta.eta} seconds`;
-    }
-
-    window.onload = updateStatus;
-  </script>
-</head>
-<body>
-  <h1>🔍 Ask Bugzilla</h1>
-  <div class="info-box">
-    <strong>This app is to demonstrate this <a href="https://bzoltan1.github.io/building-a-local-bugzilla-rag-system/" target="_blank">blog post</a>.</strong><br>
-    <p>
-    This is a simple interface to ask questions against a large Bugzilla dataset using Retrieval-Augmented Generation (RAG).
-    </p>
-    <p>
-    When a question is submitted, the backend queries a local ChromaDB vector store containing 500,000 Bugzilla records.
-    </p>
-    <p>
-    It uses an efficient sentence embedding model (<code>all-MiniLM-L6-v2</code>) to find relevant documents based on semantic similarity, then passes those to a language model (like LLaMA via Ollama) to generate a context-aware answer.
-    </p>
-    The system tracks how many queries are being processed in real time and tries to estimates the expected wait time using a sliding window of recent request durations.
-    This helps inform users about server load before they submit their question.
-    The entire pipeline runs on VM with limited resources, proving that large-scale semantic search and generative QA are possible without cloud GPUs.
-    <p>
-    What makes it cool is that it brings advanced AI-powered support search to legacy systems like Bugzilla using open-source tools, a local database, and a small, fast language model—while keeping the user informed and the backend lean.
-    </p>
-    <p>
-    </p>
-
-  </div>
+# ---------------------------------------------------------------------------
+# Concurrency tracking
+# ---------------------------------------------------------------------------
+_lock              = threading.Lock()
+_processing        = 0          # in-flight request count
+_durations: deque  = deque(maxlen=50)   # recent request durations (seconds)
 
 
-  <div id="status">Checking current load...</div>
-  <div id="eta"></div>
+def _bug_link(bug_id: str) -> str:
+    return f"{BUGZILLA_BUG_URL}{bug_id}" if bug_id else ""
 
-  <form method="post" onsubmit="showLoading()">
-    <textarea name="question" rows="4" placeholder="Enter your question here...">{{ question }}</textarea><br>
-    <button id="ask-btn" type="submit">Ask</button>
-  </form>
 
-  <div id="loading">⏳ Processing your question...</div>
+def _format_sources(source_docs) -> list[dict]:
+    """Convert LangChain Document objects into template-friendly dicts."""
+    out = []
+    for doc in source_docs:
+        meta    = doc.metadata or {}
+        bug_id  = str(meta.get("bug_id", ""))
+        title   = str(meta.get("title", ""))[:120]
+        product = meta.get("product", "")
+        status  = meta.get("status", "")
+        resolution = meta.get("resolution", "")
 
-  {% if answer %}
-  <h2>✅ Answer (in {{ time }} seconds):</h2>
-  <div class="response">{{ answer|safe }}</div>
+        parts = [p for p in [product, status, resolution] if p]
+        meta_line = " | ".join(parts)
 
-  <h3>📄 Top Source Snippets:</h3>
-  {% for doc in sources %}
-    <div class="source-snippet">
-      {% if doc.bug_link %}
-        <strong>Bug ID: <a href="{{ doc.bug_link }}" target="_blank">{{ doc.bug_id }}</a></strong><br>
-      {% endif %}
-      <pre>{{ doc.content }}</pre>
-    </div>
-  {% endfor %}
-  {% endif %}
-</body>
-</html>
-"""
+        # Show a clean snippet: strip the structured header, show body text
+        body = doc.page_content
+        # The header ends at the first blank line after "Bug #..."
+        if "\n\n" in body:
+            snippet = body[body.index("\n\n") + 2:].strip()
+        else:
+            snippet = body.strip()
+        snippet = snippet[:800]
+
+        out.append({
+            "bug_id":    bug_id,
+            "bug_link":  _bug_link(bug_id),
+            "title":     title,
+            "meta_line": meta_line,
+            "snippet":   snippet,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.route("/", methods=["GET", "POST"])
 def index():
+    global _processing
+
     question = ""
-    html_answer = ""
-    sources = []
-    time_taken = ""
+    answer   = ""
+    sources  = []
+    elapsed  = ""
+    error    = ""
 
     if request.method == "POST":
-        question = request.form["question"]
-        if question.strip():
-            start_time = time.time()
-            with lock:
-                global processing_requests
-                processing_requests += 1
+        question = request.form.get("question", "").strip()
+        if question:
+            with _lock:
+                _processing += 1
+            t0 = time.time()
             try:
-                result = query_bugzilla(question)
-                html_answer = markdown2.markdown(result["result"])
-                sources = []
-                for doc in result["source_documents"]:
-                    content = doc.page_content[:1000]
-                    bug_id = doc.metadata.get("bug_id") if doc.metadata else None
-                    bug_link = f"https://bugzilla.suse.com/show_bug.cgi?id={bug_id}" if bug_id else None
-                    sources.append({"content": content, "bug_id": bug_id, "bug_link": bug_link})
-                elapsed = result["elapsed_time"]
+                result  = rag_engine.query_bugzilla(question)
+                answer  = markdown2.markdown(result["answer"])
+                sources = _format_sources(result.get("source_documents", []))
+                elapsed = f"{result['elapsed_time']:.1f}"
+            except rag_engine.OllamaNotAvailableError as e:
+                error = str(e)
+            except rag_engine.ChromaNotReadyError as e:
+                error = str(e)
             except Exception as e:
-                html_answer = f"<div style='color:red;'>Error: {str(e)}</div>"
-                elapsed = time.time() - start_time
+                logger.exception("Unexpected error during query")
+                error = f"Unexpected error: {e}"
             finally:
-                with lock:
-                    processing_requests -= 1
-                    request_durations.append(elapsed)
-                time_taken = f"{elapsed:.2f}"
+                duration = time.time() - t0
+                with _lock:
+                    _processing -= 1
+                    _durations.append(duration)
+                if not elapsed:
+                    elapsed = f"{duration:.1f}"
 
-    return render_template_string(
-        TEMPLATE,
+    return render_template(
+        "index.html",
         question=question,
-        answer=html_answer,
+        answer=answer,
         sources=sources,
-        time=time_taken
+        elapsed=elapsed,
+        error=error,
     )
+
 
 @app.route("/status")
 def status():
-    with lock:
-        return jsonify({"processing": processing_requests})
+    with _lock:
+        return jsonify({"processing": _processing})
+
 
 @app.route("/eta")
 def eta():
-    with lock:
-        if request_durations:
-            avg = sum(request_durations) / len(request_durations)
-        else:
-            avg = 6.0  # fallback estimate in seconds
-        estimate = processing_requests * avg
-    return jsonify({"eta": round(estimate, 1)})
+    with _lock:
+        avg = (sum(_durations) / len(_durations)) if _durations else 40.0
+        estimate = round(_processing * avg, 1)
+    return jsonify({"eta": estimate})
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Bugzilla RAG web interface."
+    )
+    parser.add_argument("--db",   default=DEFAULT_CHROMA_DIR, metavar="DIR",
+                        help=f"ChromaDB directory (default: {DEFAULT_CHROMA_DIR})")
+    parser.add_argument("--port", type=int, default=5000, metavar="N",
+                        help="HTTP port (default: 5000)")
+    parser.add_argument("--host", default="0.0.0.0", metavar="ADDR",
+                        help="Bind address (default: 0.0.0.0)")
+    parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Override chroma dir if passed on CLI
+    if args.db != DEFAULT_CHROMA_DIR:
+        os.environ["CHROMA_DIR"] = args.db
+
+    logger.info("Starting Bugzilla RAG web interface on %s:%d", args.host, args.port)
+    logger.info("ChromaDB: %s", args.db)
+
+    # Eagerly initialise the RAG engine so startup errors surface immediately
+    try:
+        rag_engine.init(chroma_dir=args.db)
+    except (rag_engine.OllamaNotAvailableError, rag_engine.ChromaNotReadyError) as e:
+        logger.error("Startup failed: %s", e)
+        raise SystemExit(1)
+
+    app.run(host=args.host, port=args.port, debug=False)
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    main()
