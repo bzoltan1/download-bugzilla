@@ -1,55 +1,84 @@
 # ============================================================
 # Bugzilla RAG — Docker Compose stack
 #
-# Services:
-#   ollama  — local LLM runtime (CPU-only by default)
-#   app     — Flask RAG web interface
+# Two modes depending on your Ollama setup:
 #
-# ── Normal setup for a new teammate ──────────────────────────
+# ── Mode A: Ollama already installed as a system service ──────
+#   (common on openSUSE: sudo zypper install ollama)
+#   The app container uses host networking to reach localhost:11434.
 #
-#   1. Clone the repo and enter the directory.
+#     cp .env.example .env          # no changes needed
+#     docker compose build
+#     docker compose up -d app-host
+#     # open http://localhost:5000
 #
-#   2. Copy the example config:
-#        cp .env.example .env
-#      No edits needed for basic use. Do NOT set OLLAMA_BASE_URL
-#      — the default (http://ollama:11434) is correct inside Docker.
+# ── Mode B: Ollama managed by Docker Compose (sidecar) ────────
+#   Use this when Ollama is NOT installed on the host.
 #
-#   3. Build the app image:
-#        docker compose build
+#     cp .env.example .env          # no changes needed
+#     docker compose build
+#     docker compose --profile ollama up -d
+#     docker compose exec ollama ollama pull qwen3-coder:30b
+#     # open http://localhost:5000
 #
-#   4. Start Ollama and pull the LLM model (~18 GB, one-time):
-#        docker compose up -d ollama
-#        docker compose exec ollama ollama pull qwen3-coder:30b
+# ── Receiving the ChromaDB index (both modes) ─────────────────
+#   Before starting the app, rsync the index from the data owner:
 #
-#   5. Contact the data owner to rsync the ChromaDB index:
-#        rsync -avz --progress \
-#          <owner>@<owner-host>:/home/balogh/download-bugzilla/chroma_db/ \
-#          ./chroma_db/
-#      (46 GB — takes 10–60 min depending on network speed)
+#     rsync -avz --progress \
+#       <owner>@<owner-host>:/path/to/chroma_db/ \
+#       ./chroma_db/
 #
-#   6. Start the app:
-#        docker compose up -d app
-#        docker compose logs -f app
-#
-#   7. Open http://localhost:5000
-#
-# ── To re-index from the raw JSONL (optional, ~15 hours) ─────
-#
-#   Obtain bug_reports.jsonl from the data owner, place it next
-#   to this file, then:
-#        BUGZILLA_JSONL_HOST_PATH=./bug_reports.jsonl docker compose up app
-#   The entrypoint will detect the empty chroma_db/ and start indexing.
+# ── Re-indexing from scratch (optional, ~15 hours) ────────────
+#   Place bug_reports.jsonl next to this file, then set:
+#     BUGZILLA_JSONL_HOST_PATH=./bug_reports.jsonl
+#   before running either mode above.
 # ============================================================
 
 services:
 
-  # ── Ollama: local LLM runtime ──────────────────────────────
+  # ── Mode A: app with host networking ─────────────────────────
+  # Use when Ollama runs as a system service on the host.
+  # Reaches Ollama at http://localhost:11434 (same as bare-metal).
+  app-host:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bugzilla-rag:latest
+    container_name: bugzilla-app
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ${CHROMA_DB_HOST_PATH:-./chroma_db}:/data/chroma_db
+      - ${BUGZILLA_JSONL_HOST_PATH:-/dev/null}:/data/bug_reports.jsonl:ro
+    environment:
+      CHROMA_DIR:         /data/chroma_db
+      BUGZILLA_JSONL:     /data/bug_reports.jsonl
+      OLLAMA_BASE_URL:    http://localhost:11434
+      OLLAMA_MODEL:       ${OLLAMA_MODEL:-qwen3-coder:30b}
+      OLLAMA_TEMPERATURE: ${OLLAMA_TEMPERATURE:-0.1}
+      EMBEDDING_MODEL:    ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      RAG_TOP_K:          ${RAG_TOP_K:-3}
+      INDEX_BATCH_SIZE:   ${INDEX_BATCH_SIZE:-200}
+      BUGZILLA_BASE_URL:  ${BUGZILLA_BASE_URL:-https://bugzilla.suse.com/rest/bug}
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ── Mode B: Ollama sidecar ────────────────────────────────────
+  # Use when Ollama is NOT installed on the host.
+  # Start with:  docker compose --profile ollama up -d
   ollama:
+    profiles: [ollama]
     image: ollama/ollama:latest
     container_name: bugzilla-ollama
     restart: unless-stopped
     volumes:
-      # Model weights (~18 GB for qwen3-coder:30b) persisted across restarts.
       - ollama-models:/root/.ollama
     ports:
       - "11434:11434"
@@ -68,13 +97,14 @@ services:
       retries: 12
       start_period: 30s
 
-  # ── App: Flask RAG web interface ───────────────────────────
+  # ── Mode B: app with bridge networking (sidecar Ollama) ───────
   app:
+    profiles: [ollama]
     build:
       context: .
       dockerfile: Dockerfile
     image: bugzilla-rag:latest
-    container_name: bugzilla-app
+    container_name: bugzilla-app-sidecar
     restart: unless-stopped
     depends_on:
       ollama:
@@ -82,11 +112,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # ChromaDB index (46 GB) — rsync from the data owner before starting.
       - ${CHROMA_DB_HOST_PATH:-./chroma_db}:/data/chroma_db
-
-      # Raw JSONL (4 GB) — only needed to re-index from scratch.
-      # Leave unset if you received chroma_db/ via rsync.
       - ${BUGZILLA_JSONL_HOST_PATH:-/dev/null}:/data/bug_reports.jsonl:ro
     environment:
       CHROMA_DIR:         /data/chroma_db

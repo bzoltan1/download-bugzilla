@@ -50,9 +50,30 @@ separately from the data owner via rsync.
 
 | Requirement | Notes |
 |---|---|
-| Docker Engine + Docker Compose | [Install Docker](https://docs.docker.com/get-docker/) |
+| Docker Engine + Docker Compose | See installation instructions below |
 | ~72 GB free disk | 46 GB index + 18 GB LLM model + 6 GB image + overhead |
 | Network access to the data owner | For the rsync step |
+
+#### Installing Docker on openSUSE / SUSE
+
+```bash
+sudo zypper install docker docker-compose
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER   # log out and back in after this
+```
+
+Verify:
+
+```bash
+docker --version          # Docker version 29.x
+docker compose version    # Docker Compose version 5.x
+```
+
+#### Installing Docker on other platforms
+
+Follow the [official Docker installation guide](https://docs.docker.com/get-docker/).
+Docker Compose v2 is included with Docker Desktop (macOS/Windows) and available as
+a plugin on Linux (`docker compose`, not the legacy `docker-compose`).
 
 ### Step 1 — Clone the repository
 
@@ -80,19 +101,38 @@ Only needed once; the image is cached locally after the first build.
 docker compose build
 ```
 
-### Step 4 — Pull the LLM model
+### Step 4 — Set up Ollama
 
-Start the Ollama service and download the language model (~18 GB, one-time):
+Two options depending on whether Ollama is already installed on your system.
+
+#### Option A — Ollama installed as a system service (openSUSE / most Linux)
+
+If you installed Ollama via `sudo zypper install ollama` (or the equivalent for your
+distro), it is already running on `localhost:11434`. Pull the model once:
 
 ```bash
-docker compose up -d ollama
-docker compose exec ollama ollama pull qwen3-coder:30b
+ollama pull qwen3-coder:30b
 ```
 
-This takes 10–60 minutes depending on your internet speed. Check progress with:
+Then use `app-host` (host-network mode) in all subsequent `docker compose` commands:
 
 ```bash
-docker compose logs -f ollama
+docker compose up -d app-host
+```
+
+#### Option B — Ollama managed by Docker Compose
+
+If Ollama is **not** installed on the host, use the bundled sidecar instead:
+
+```bash
+docker compose --profile ollama up -d ollama
+docker compose exec ollama ollama pull qwen3-coder:30b   # ~18 GB, one-time
+```
+
+Then start the app with the sidecar profile:
+
+```bash
+docker compose --profile ollama up -d app
 ```
 
 ### Step 5 — Receive the ChromaDB index
@@ -115,8 +155,15 @@ watch -n5 "du -sh chroma_db/"
 
 ### Step 6 — Start the application
 
+**Option A (system Ollama):**
 ```bash
-docker compose up -d app
+docker compose up -d app-host
+docker compose logs -f app-host
+```
+
+**Option B (sidecar Ollama):**
+```bash
+docker compose --profile ollama up -d app
 docker compose logs -f app
 ```
 
